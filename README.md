@@ -70,7 +70,13 @@ It could be as simple as:
 $ gcc utee.c -o utee && ./utee echo.txt
 ```
 
-Or you could use the Makefile I'll supply in a few commits.
+Or you could use the Makefile:
+
+```bash
+$ make
+# or if you want a debug version:
+$ make debug
+```
 
 Requirements
 ============
@@ -84,8 +90,6 @@ as the initial implementations had bugs:
 TODO
 ====
 
-- Get rid of those `VERBOSE` ifdefs, they ugly up the codebase. I just
-  put them in so it would be more like tee(1).
 - Try `fcntl(fd, F_SETPIPE_SZ, ...)` and see if it can do something for
   utee.
 
