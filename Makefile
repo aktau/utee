@@ -1,3 +1,5 @@
+PREFIX := /usr/local
+
 CFLAGS_DEBUG := -g3 \
 	-O0 \
 	-Werror \
@@ -53,9 +55,11 @@ release: CFLAGS += $(CFLAGS_RELEASE)
 release: utee
 
 utee: utee.c
-	$(CC) $(CFLAGS) $^ -o $@
+
+install: playpen
+	install -Dm755 $< $(DESTDIR)$(PREFIX)/bin/$<
 
 clean:
-	rm utee
+	@rm utee || true
 
-.PHONY: clean
+.PHONY: clean install
