@@ -1,18 +1,48 @@
 microtee
 ========
 
-Based of a [small implementation of
+Based on a [small implementation of
 tee(1)](http://lwn.net/Articles/179434/) with the
 [tee()](http://man7.org/linux/man-pages/man2/tee.2.html)/[splice()](http://man7.org/linux/man-pages/man2/splice.2.html)
 system calls by Jens Axboe.
 
-That toy example could only handle cases where both stdin and stdout
-were pipes. The reason for this being that the `tee()` system call only
-accepts pipes as input (`splice()` only needs one of the fds to be pipes).
+That toy example can only handle cases where both stdin and stdout are
+pipes. This is because the `tee()` system call only accepts pipes as
+input fds. For reference: `splice()` only needs one of the fds to be
+pipes.
 
-**microtee** tries to alleviate this problem by falling back to an
+**utee** tries to alleviate this problem by falling back to an
 intermediate pipe if it has to deal with input or ouput that's not a
 pipe. An pipe is a kernel buffer, so no user-space buffering is done.
+
+So, in the simple case where both stdin and stdout are already pipes,
+**utee** does (pseudo-code):
+
+```c
+tee(stdin, stdout);
+splice(stdin, outfile);
+```
+
+Otherwise, **utee** falls back to something like this:
+
+```c
+/* use intermediate pipes */
+int inpipe[2], outpipe[2];
+pipe(inpipe);
+pipe(outpipe);
+
+/* stream the input to an intermediate pipe and copy that pipe to
+ * another intermediate pipe with tee() */
+splice(stdin, pipefd[1]);
+tee(inpipe[0], outpipe[1]);
+
+/* copy to both stdout and the outfile */
+splice(inpipe[0], stdout);
+splice(outpipe[0], outfile);
+```
+
+Of course, there could be intermediate cases where either stdin or
+stdout is a pipe, but I haven't implemented that yet.
 
 It's just a small experiment of mine because I wanted to get to know
 `tee()` and `splice()` better. I don't expect it will see any actual
@@ -62,7 +92,7 @@ TODO
 Resources
 =========
 
-Things that talk about `tee()` and `splice()` or zero-copy that I found online.
+Things that talk about `tee()` and `splice()` or zero-copy thatt I found online.
 
 - [Archive of things Linus has said about tee() and
   splice()](http://yarchive.net/comp/linux/splice.html)
@@ -71,3 +101,5 @@ Things that talk about `tee()` and `splice()` or zero-copy that I found online.
   may overlap slightly with the link above.
 - [Zero-Copy with sendfile and
   splice](http://blog.superpat.com/2010/06/01/zero-copy-in-linux-with-sendfile-and-splice/)
+- [scribd: splice, tee, vmsplice, zero-copy in
+  Linux](http://www.scribd.com/doc/4006475/Splice-Tee-VMsplice-zero-copy-in-Linux)
