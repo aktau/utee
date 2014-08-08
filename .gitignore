@@ -1,3 +1,7 @@
+utee
+input.txt
+output.txt
+
 # Object files
 *.o
 *.ko
