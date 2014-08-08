@@ -39,7 +39,8 @@ WARN := -Wall -Wextra -pedantic \
 	-Wstrict-aliasing=2 -Wstrict-overflow=5 \
 	-Wdisabled-optimization -Wshadow -Wmissing-braces
 PROT := -D_FORTIFY_SOURCE=2 -fstack-protector
-CFLAGS ?= $(STD) $(WARN) $(PROT)
+VERSION := $(shell git describe --always --dirty)
+CFLAGS ?= $(STD) $(WARN) $(PROT) -DVERSION=\"$(VERSION)\"
 
 # the default target is release
 all: release

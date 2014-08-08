@@ -13,6 +13,10 @@
 #include <sys/stat.h>
 #include <sys/sendfile.h>
 
+#ifndef VERSION
+#define VERSION "unknown"
+#endif
+
 #if __STDC_VERSION__ >= 201112L
 #define NORETURN _Noreturn
 #else
@@ -199,6 +203,8 @@ int main(int argc, char *argv[]) {
     if (!file) {
         usage();
     }
+
+    TRACE("Welcome to utee version " VERSION "\n");
 
     int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
