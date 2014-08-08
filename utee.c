@@ -13,6 +13,12 @@
 #include <sys/stat.h>
 #include <sys/sendfile.h>
 
+#if __STDC_VERSION__ >= 201112L
+#define NORETURN _Noreturn
+#else
+#define NORETURN
+#endif
+
 /* global variables that control program behaviour */
 static int g_verbose = 0;
 
@@ -37,7 +43,7 @@ static bool spliceall(int infd, int outfd, size_t len) {
     return true;
 }
 
-_Noreturn static void usage() {
+NORETURN static void usage() {
     puts("Usage: tee <filename>");
     exit(EXIT_FAILURE);
 }
