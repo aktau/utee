@@ -57,7 +57,7 @@ release: utee
 
 utee: utee.c
 
-install: playpen
+install: utee
 	install -Dm755 $< $(DESTDIR)$(PREFIX)/bin/$<
 
 clean:
