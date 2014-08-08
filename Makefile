@@ -35,9 +35,9 @@ WARN := -Wall -Wextra -pedantic \
 	-Wredundant-decls -Wformat=2 \
 	-Wunreachable-code -Wfloat-equal \
 	-Wstrict-aliasing=2 -Wstrict-overflow=5 \
-	-Wdisabled-optimization -Wshadow -Wmissing-braces \
-	-D_FORTIFY_SOURCE=2
-CFLAGS ?= $(STD) $(WARN)
+	-Wdisabled-optimization -Wshadow -Wmissing-braces
+PROT := -D_FORTIFY_SOURCE=2 -fstack-protector
+CFLAGS ?= $(STD) $(WARN) $(PROT)
 
 # the default target is release
 all: release
