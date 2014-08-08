@@ -13,6 +13,16 @@
 #include <sys/stat.h>
 #include <sys/sendfile.h>
 
+/* global variables that control program behaviour */
+static int g_verbose = 0;
+
+/* macro that only prints when verbosity is enabled (easier than messing
+ * with varargs and vprintf) */
+#define TRACE(format, ...) \
+    do { \
+        if (g_verbose > 0) fprintf(stderr, format, ##__VA_ARGS__); \
+    } while (0)
+
 static bool spliceall(int infd, int outfd, size_t len) {
     while (len) {
         ssize_t written = splice(infd, NULL, outfd, NULL, (size_t) len,
@@ -70,7 +80,7 @@ static ssize_t ctee(int in, int out, int file) {
     }
 
     ssize_t written = 0;
-    do {
+    while (1) {
         /* copy the input to the kernel buffer, passing SIZE_MAX or even
          * SSIZE_MAX doesn't (always) work. The call returns "Invalid
          * argument" */
@@ -86,9 +96,7 @@ static ssize_t ctee(int in, int out, int file) {
             break;
         }
 
-#ifdef VERBOSE
-        printf("recvd %zd bytes\n", rcvd);
-#endif
+        TRACE("recvd %zd bytes\n", rcvd);
 
         /* "copy" to temporary buffer */
         ssize_t teed = tee(inpipe[0], outpipe[1], (size_t) rcvd, SPLICE_F_NONBLOCK);
@@ -107,9 +115,7 @@ static ssize_t ctee(int in, int out, int file) {
             break;
         }
 
-#ifdef VERBOSE
-        printf("teed %zd bytes\n", teed);
-#endif
+        TRACE("teed %zd bytes\n", teed);
 
         /* stream len bytes to `out` and `file` */
         if (!spliceall(outpipe[0], file, teed)) {
@@ -123,7 +129,7 @@ static ssize_t ctee(int in, int out, int file) {
         }
 
         written += rcvd;
-    } while (1);
+    }
 
     return written;
 
@@ -168,12 +174,27 @@ static ssize_t ttee(int pin, int pout, int file) {
     return written;
 }
 
+static const char *parseopts(int argc, char *argv[]) {
+    int option = 0;
+
+    while ((option = getopt(argc, argv, "v")) != -1) {
+        switch (option) {
+            case 'v': g_verbose = 1; break;
+            /* default: return false; */
+            default: return NULL;
+        }
+    }
+
+    return argv[optind];
+}
+
 int main(int argc, char *argv[]) {
-    if (argc <= 1) {
+    const char *file = parseopts(argc, argv);
+    if (!file) {
         usage();
     }
 
-    int fd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         perror("couldn't create file");
         exit(EXIT_FAILURE);
@@ -182,10 +203,8 @@ int main(int argc, char *argv[]) {
     mode_t inmode = mode(STDIN_FILENO);
     mode_t outmode = mode(STDOUT_FILENO);
 
-#ifdef VERBOSE
-    printf("STDIN is a %s!\n", typestr(inmode));
-    printf("STDOUT is a %s!\n", typestr(outmode));
-#endif
+    TRACE("STDIN is a %s!\n", typestr(inmode));
+    TRACE("STDOUT is a %s!\n", typestr(outmode));
 
     int status = EXIT_SUCCESS;
     ssize_t written = -1;
@@ -195,18 +214,14 @@ int main(int argc, char *argv[]) {
         /* both stdin and stdout are pipes (this happens in a shell when
          * doing for example "... | utee | ..."), which means we don't have
          * to create intermediate pipes */
-#ifdef VERBOSE
-        printf("taking shortcut\n");
-#endif
+        TRACE("input and output are pipes, taking a shortcut\n");
         written = ttee(STDIN_FILENO, STDOUT_FILENO, fd);
     }
     else {
         /* either stdin or stdout is not a pipe, so we use intermediate
          * pipes to be able to use tee()/splice(), thus avoiding user-space
          * buffers */
-#ifdef VERBOSE
-        printf("hard case...\n");
-#endif
+        TRACE("input or output is not a pipe, creating intermediary pipes\n");
         written = ctee(STDIN_FILENO, STDOUT_FILENO, fd);
     }
 
@@ -215,9 +230,7 @@ int main(int argc, char *argv[]) {
         goto end;
     }
 
-#ifdef VERBOSE
-    printf("wrote %zd bytes\n", written);
-#endif
+    TRACE("wrote %zd bytes\n", written);
 
 end:
     close(fd);
