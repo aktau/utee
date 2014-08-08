@@ -15,7 +15,8 @@
 
 static bool spliceall(int infd, int outfd, size_t len) {
     while (len) {
-        ssize_t written = splice(infd, NULL, outfd, NULL, (size_t) len, SPLICE_F_MOVE);
+        ssize_t written = splice(infd, NULL, outfd, NULL, (size_t) len,
+                SPLICE_F_MORE | SPLICE_F_MOVE);
         if (written <= 0) {
             return false;
         }
@@ -73,7 +74,8 @@ static ssize_t ctee(int in, int out, int file) {
         /* copy the input to the kernel buffer, passing SIZE_MAX or even
          * SSIZE_MAX doesn't (always) work. The call returns "Invalid
          * argument" */
-        ssize_t rcvd = splice(in, NULL, inpipe[1], NULL, (size_t) INT_MAX, SPLICE_F_MOVE);
+        ssize_t rcvd = splice(in, NULL, inpipe[1], NULL, (size_t) INT_MAX,
+                SPLICE_F_MORE | SPLICE_F_MOVE);
         if (rcvd == -1) {
             perror("input splice()");
             goto error;
