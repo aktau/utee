@@ -2,22 +2,22 @@ microtee
 ========
 
 Based of a [small implementation of
-tee(7)](http://lwn.net/Articles/179434/) with the
+tee(1)](http://lwn.net/Articles/179434/) with the
 [tee()](http://man7.org/linux/man-pages/man2/tee.2.html)/[splice()](http://man7.org/linux/man-pages/man2/splice.2.html)
 system calls by Jens Axboe.
 
 That toy example could only handle cases where both stdin and stdout
-were pipes. The reason for this being that the `tee` system call only
-accepts pipes as input (splice() only needs one of the fds to be pipes).
+were pipes. The reason for this being that the `tee()` system call only
+accepts pipes as input (`splice()` only needs one of the fds to be pipes).
 
 **microtee** tries to alleviate this problem by falling back to an
 intermediate pipe if it has to deal with input or ouput that's not a
-pipe.
+pipe. An pipe is a kernel buffer, so no user-space buffering is done.
 
 It's just a small experiment of mine because I wanted to get to know
-tee() and splice() better. I don't expect it will see any actual
-production use. I haven't even looked at the original `tee(7)`
-implementation to see if it actually used `tee()`/`splice()`. It's
+`tee()` and `splice()` better. I don't expect it will see any actual
+production use. I haven't even looked at the original `tee(1)`
+implementation to see if it actually uses `tee()`/`splice()`. It's
 possible, but those system calls only exist on rather modern linux
 (2.16.17) so perhaps not. Linus more or less predicted that there would
 be few users of these system calls, even if they were really awesome.
@@ -68,6 +68,6 @@ Things that talk about `tee()` and `splice()` or zero-copy that I found online.
   splice()](http://yarchive.net/comp/linux/splice.html)
 - [Some more things Linus
   said](https://web.archive.org/web/20130521163124/http://kerneltrap.org/node/6505)
-  may overlap slightly with the link above
+  may overlap slightly with the link above.
 - [Zero-Copy with sendfile and
   splice](http://blog.superpat.com/2010/06/01/zero-copy-in-linux-with-sendfile-and-splice/)
