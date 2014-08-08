@@ -13,7 +13,7 @@ pipes.
 
 **utee** tries to alleviate this problem by falling back to an
 intermediate pipe if it has to deal with input or ouput that's not a
-pipe. An pipe is a kernel buffer, so no user-space buffering is done.
+pipe. A pipe is a kernel buffer, so no user-space buffering is done.
 
 So, in the simple case where both stdin and stdout are already pipes,
 **utee** does (pseudo-code):
@@ -46,11 +46,7 @@ stdout is a pipe, but I haven't implemented that yet.
 
 It's just a small experiment of mine because I wanted to get to know
 `tee()` and `splice()` better. I don't expect it will see any actual
-production use. I haven't even looked at the original `tee(1)`
-implementation to see if it actually uses `tee()`/`splice()`. It's
-possible, but those system calls only exist on rather modern linux
-(2.16.17) so perhaps not. Linus more or less predicted that there would
-be few users of these system calls, even if they were really awesome.
+production use.
 
 Advantages:
 - No user space buffers
@@ -60,6 +56,73 @@ Advantages:
 
 Disadvantages:
 - Not portable to other UNIXes until they implement `tee()`/`splice()`
+
+Comparison
+==========
+
+Inspecting the source of [GNU
+tee](https://github.com/coreutils/coreutils/blob/master/src/tee.c)
+reveals that it relies on a static buffer and a simple
+`read()`/`write()` pair for its operation. Running it under strace
+confirms it:
+
+```bash
+$ strace tee copy1.file < input.file > copy2.file
+...
+read(0,
+"WK\277\363\327\323O\317_\375r\254\213/\202J\312\306+\244\275\333\363\374R{\371zz\374+>"...,
+8192) = 8192
+write(1,
+"WK\277\363\327\323O\317_\375r\254\213/\202J\312\306+\244\275\333\363\374R{\371zz\374+>"...,
+8192) = 8192
+write(3,
+"WK\277\363\327\323O\317_\375r\254\213/\202J\312\306+\244\275\333\363\374R{\371zz\374+>"...,
+8192) = 8192
+read(0,
+"\302\303:qy>\332Q\305\375\207\215\4\37\307\203bc;\310\272\36kA\364PK\323=\3120\332"...,
+8192) = 8192
+write(1,
+"\302\303:qy>\332Q\305\375\207\215\4\37\307\203bc;\310\272\36kA\364PK\323=\3120\332"...,
+8192) = 8192
+write(3,
+"\302\303:qy>\332Q\305\375\207\215\4\37\307\203bc;\310\272\36kA\364PK\323=\3120\332"...,
+8192) = 8192
+...
+```
+
+Doing the same with **utee** gives:
+
+```bash
+$ strace utee copy1.file < input.file > copy2.file
+tee(0x4, 0x7, 0x10000, 0x2)             = 65536
+splice(0x6, 0, 0x3, 0, 0x10000, 0x5)    = 65536
+splice(0x4, 0, 0x1, 0, 0x10000, 0x5)    = 65536
+splice(0, 0, 0x5, 0, 0x7fffffff, 0x5)   = 65536
+tee(0x4, 0x7, 0x10000, 0x2)             = 65536
+splice(0x6, 0, 0x3, 0, 0x10000, 0x5)    = 65536
+splice(0x4, 0, 0x1, 0, 0x10000, 0x5)    = 65536
+splice(0, 0, 0x5, 0, 0x7fffffff, 0x5)   = 65536
+```
+
+Ghetto benchmarks show that this approach is about 8-10% faster than
+`read()`/`write()`. Not as much as I expected. I first thought that
+enlarging the (intermediate) pipes might help, but as we see the GNU tee
+buffer is already 8 times smaller than the pipe buffer used by utee. So
+that's unlikely to be a bottleneck. Perhaps it's limited by HDD write speed.
+
+To test that hypothesis I tried redirecting to `/dev/null`:
+
+```bash
+$ time tee /dev/null < input.file > /dev/null
+tee /dev/null < input.file > /dev/null  0.01s user 0.03s
+system 95% cpu 0.046 total
+$ time utee /dev/null < input.file > /dev/null
+utee /dev/null < input.file > /dev/null  0.00s user 0.01s
+system 75% cpu 0.011 total
+```
+
+So about 4x faster, with the HDD for the input file warmed up (I tried
+multiple interleaved runs).
 
 Building
 ========
