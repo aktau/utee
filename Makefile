@@ -30,7 +30,7 @@ else ifeq ($(CC_TYPE),gcc)
 endif
 
 STD ?= -std=c99
-WARN := -Wall -Wextra \
+WARN := -Wall -Wextra -pedantic \
 	-Wcast-align -Wcast-qual -Wpointer-arith \
 	-Wredundant-decls -Wformat=2 \
 	-Wunreachable-code -Wfloat-equal \

@@ -24,9 +24,9 @@ static int g_verbose = 0;
 
 /* macro that only prints when verbosity is enabled (easier than messing
  * with varargs and vprintf) */
-#define TRACE(format, ...) \
+#define TRACE(...) \
     do { \
-        if (g_verbose > 0) fprintf(stderr, format, ##__VA_ARGS__); \
+        if (g_verbose > 0) fprintf(stderr, __VA_ARGS__); \
     } while (0)
 
 static bool spliceall(int infd, int outfd, size_t len) {
