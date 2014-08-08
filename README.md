@@ -52,10 +52,22 @@ Advantages:
 - No user space buffers
   - This should be fast
   - Should be able to use the underlying devices' DMA engine
-- Just a single tiny source file
+- Just a single tiny source file (note: This was before I looked at GNU
+  tee's source file, which is even tinier than utee, making utee's name
+  a lie. Oh well, such is life.)
+- Makes an effort not to thrash the page cache through the use of Linus
+  Torvalds [writing
+  trick](http://lkml.iu.edu//hypermail/linux/kernel/1005.2/01845.html)
+  and `posix_fadvise`. If you're wondering, thrashing the page cache is
+  the reason that your nightly rsync run makes everything run slow. I
+  should probably say **made**, because rsync has received patches to
+  enable `posix_fadvise`, so it should be better.
 
 Disadvantages:
 - Not portable to other UNIXes until they implement `tee()`/`splice()`
+- Why would anyone need a slightly faster tee that doesn't thrash the
+  page cache?
+- Can't append to files, yet...
 
 Comparison
 ==========
@@ -124,6 +136,53 @@ system 75% cpu 0.011 total
 So about 4x faster, with the HDD for the input file warmed up (I tried
 multiple interleaved runs).
 
+After this was implemented, I came upon some interesting articles
+talking about how to avoid thrashing the page cache. This is important
+as reading large files into the page cache could evict files that were
+in use (think of databases, webservers, ...) for no good reason. It's
+not like (u)tee is going to need the file afterwards. So I got to work
+on the `posix_fadvise` and friends. The results:
+
+```bash
+# utee:
+$ grep ^Cached: /proc/meminfo && utee copy1.file < bigfile > copy2.file && grep ^Cached: /proc/meminfo
+Cached:           979816 kB
+Cached:           979904 kB
+# regular tee:
+$ grep ^Cached: /proc/meminfo && tee copy1.file < bigfile > copy2.file && grep ^Cached: /proc/meminfo
+Cached:           979832 kB
+Cached:          1337344 kB
+# again:
+$ grep ^Cached: /proc/meminfo && tee copy1.file < bigfile > copy2.file && grep ^Cached: /proc/meminfo
+Cached:          1337356 kB
+Cached:          1337352 kB
+# utee (it releases the page cache that was present):
+$ grep ^Cached: /proc/meminfo && utee copy1.file < bigfile > copy2.file && grep ^Cached: /proc/meminfo
+Cached:          1337364 kB
+Cached:           979932 kB
+```
+
+This might've had a deleterious effect on performance, so I check again
+and this is the case, about a 10% decrease vis-a-vis regular tee. For
+this reason, a new option was added: `-c`. This forces utee to cleanse
+the page cache, making sure that none of your precious data is evicted.
+At the cost of about 10% writing speed.
+
+Note that when writing just one file, as is usually the case, the write
+cache will always be cleansed (irrespective of the `-c` flag). This is
+because I found that this does not harm performance at all (there's only
+benefits).
+
+If the Linux kernel ever properly implements `POSIX_FADV_NOREUSE`, we
+can just use that, leave some complexity behind and let the kernel worry
+about everything. That would be fantastic. Until then, we have to do the
+`sync_file_range` + `POSIX_FADV_DONTNEED` dance and suffer a slight
+performance degradation when writing multiple files at the same time
+(and the `-c` flag is specified).
+
+I did my tests on an SSD, so that might also have an impact. Someone
+should test on a regular HDD.
+
 Building
 ========
 
@@ -154,7 +213,8 @@ TODO
 ====
 
 - Try `fcntl(fd, F_SETPIPE_SZ, ...)` and see if it can do something for
-  utee.
+  utee
+- Append to files
 
 Resources
 =========

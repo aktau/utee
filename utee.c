@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -23,8 +24,12 @@
 #define NORETURN
 #endif
 
+/* an 8MB window */
+#define WINDOW (8 * 1024 * 1024)
+
 /* global variables that control program behaviour */
 static int g_verbose = 0;
+static bool g_force_no_thrash = false;
 
 /* macro that only prints when verbosity is enabled (easier than messing
  * with varargs and vprintf) */
@@ -32,6 +37,20 @@ static int g_verbose = 0;
     do { \
         if (g_verbose > 0) fprintf(stderr, __VA_ARGS__); \
     } while (0)
+
+/* perror() but with a self-supplied errno */
+static void perrorv(const char *msg, int err) {
+    /* we don't multithread, so strerror() should be fine */
+    fprintf(stderr, "%s: %s\n", msg, strerror(err));
+}
+
+/* simplified version of posix_fadvise */
+static void fadvise(int fd, unsigned int advice) {
+    int err = posix_fadvise(fd, 0, 0, advice);
+    if (err != 0) {
+        perrorv("posix_fadvise", err);
+    }
+}
 
 static bool spliceall(int infd, int outfd, size_t len) {
     while (len) {
@@ -48,7 +67,9 @@ static bool spliceall(int infd, int outfd, size_t len) {
 }
 
 NORETURN static void usage() {
-    puts("Usage: tee <filename>");
+    puts("Usage: utee [OPTION]... [FILE]...\n"
+         "\n  -v\tbe verbose"
+         "\n  -c\tforce pagecache cleansing (even if write performance suffers a little)");
     exit(EXIT_FAILURE);
 }
 
@@ -73,6 +94,35 @@ static const char *typestr(mode_t m) {
     return "unknown";
 }
 
+/* asynchronously write the range to disk */
+static void writeout(int fd, size_t offset, size_t len) {
+    /* this won't block, but will induce the kernel to perform a
+     * writeout of the previous window */
+    sync_file_range(fd, offset, len, SYNC_FILE_RANGE_WRITE);
+}
+
+/* write the range and force it out of the page cache */
+static void discard(int fd, size_t offset, size_t len) {
+    /* contrary to the former call this will block, force write
+     * out the old range, then tell the OS we don't need it
+     * anymore */
+    sync_file_range(fd, offset, len,
+            SYNC_FILE_RANGE_WAIT_BEFORE |
+            SYNC_FILE_RANGE_WRITE |
+            SYNC_FILE_RANGE_WAIT_AFTER);
+    posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
+}
+
+/* tell the OS to queue the window we just wrote (idx) for writing, and
+ * force it to write the window before that (idx - 1) and discard it from
+ * the page cache */
+static void swapwindow(int fd, size_t idx, size_t window) {
+    writeout(fd, window * idx, window);
+    if (idx) {
+        discard(fd, window * (idx - 1), window);
+    }
+}
+
 /* fully generalized tee */
 static ssize_t ctee(int in, int out, int file) {
     int inpipe[2];
@@ -90,6 +140,9 @@ static ssize_t ctee(int in, int out, int file) {
     }
 
     ssize_t written = 0;
+    size_t wfilled = 0;
+    size_t windowidx = 0;
+    bool outisfile = S_ISREG(mode(out));
     while (1) {
         /* copy the input to the kernel buffer, passing SIZE_MAX or even
          * SSIZE_MAX doesn't (always) work. The call returns "Invalid
@@ -138,7 +191,33 @@ static ssize_t ctee(int in, int out, int file) {
             goto error;
         }
 
+        /* don't thrash the page cache, we won't be reading the file anyway,
+         * we don't call it on every iteration (save CPU) quite
+         * CPU-intensive to call; wait until a window has filled up */
+        if (wfilled >= WINDOW) {
+            swapwindow(file, windowidx, WINDOW);
+
+            /* technically, the out fd could also be a file (example: `utee
+             * file1 > file2`), in that case also clear the page cache for
+             * the out fd */
+            if (outisfile && g_force_no_thrash) {
+                swapwindow(out, windowidx, WINDOW);
+            }
+
+            wfilled = 0;
+            windowidx++;
+        }
+
         written += rcvd;
+        wfilled += rcvd;
+    }
+
+    /* discard the last slice of data */
+    if (windowidx) {
+        discard(file, WINDOW * (windowidx - 1), WINDOW + wfilled);
+        if (outisfile && g_force_no_thrash) {
+            discard(out, WINDOW * (windowidx - 1), WINDOW + wfilled);
+        }
     }
 
     return written;
@@ -187,12 +266,16 @@ static ssize_t ttee(int pin, int pout, int file) {
 static const char *parseopts(int argc, char *argv[]) {
     int option = 0;
 
-    while ((option = getopt(argc, argv, "v")) != -1) {
+    while ((option = getopt(argc, argv, "vc")) != -1) {
         switch (option) {
             case 'v': g_verbose = 1; break;
-            /* default: return false; */
+            case 'c': g_force_no_thrash = true; break;
             default: return NULL;
         }
+    }
+
+    if (argc <= optind) {
+        return NULL;
     }
 
     return argv[optind];
@@ -217,6 +300,13 @@ int main(int argc, char *argv[]) {
 
     TRACE("STDIN is a %s!\n", typestr(inmode));
     TRACE("STDOUT is a %s!\n", typestr(outmode));
+
+    if (S_ISREG(inmode)) {
+        /* technically it would be best to supply POSIX_FADV_NOREUSE, but
+         * since that's a no-op on Linux we'll at least try to make linux
+         * perform more readahead. */
+        fadvise(STDIN_FILENO, POSIX_FADV_SEQUENTIAL);
+    }
 
     int status = EXIT_SUCCESS;
     ssize_t written = -1;
@@ -245,6 +335,11 @@ int main(int argc, char *argv[]) {
     TRACE("wrote %zd bytes\n", written);
 
 end:
+    if (S_ISREG(inmode)) {
+        /* restore the advice for the infd */
+        fadvise(STDIN_FILENO, POSIX_FADV_NORMAL);
+    }
+
     close(fd);
     exit(status);
 }
