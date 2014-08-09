@@ -54,7 +54,7 @@ static void fadvise(int fd, unsigned int advice) {
 
 static bool spliceall(int infd, int outfd, size_t len) {
     while (len) {
-        ssize_t written = splice(infd, NULL, outfd, NULL, (size_t) len,
+        ssize_t written = splice(infd, NULL, outfd, NULL, len,
                 SPLICE_F_MORE | SPLICE_F_MOVE);
         if (written <= 0) {
             return false;
@@ -320,6 +320,12 @@ int main(int argc, char *argv[]) {
         written = ttee(STDIN_FILENO, STDOUT_FILENO, fd);
     }
     else {
+        if (fcntl(STDOUT_FILENO, F_GETFL) & O_APPEND) {
+            fputs("can't output to an append-mode file, use regular tee\n", stderr);
+            status = EXIT_FAILURE;
+            goto end;
+        }
+
         /* either stdin or stdout is not a pipe, so we use intermediate
          * pipes to be able to use tee()/splice(), thus avoiding user-space
          * buffers */
