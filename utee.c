@@ -421,8 +421,11 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < nfiles + 1; ++i) {
         if (close(out[i]) == -1) {
             perror("close()");
-            exit(EXIT_FAILURE);
         }
+    }
+
+    if (close(STDIN_FILENO) == -1) {
+        perror("close()");
     }
 
     free(out);
