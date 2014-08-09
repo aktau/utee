@@ -23,6 +23,9 @@
 #define NORETURN
 #endif
 
+#define NELEM(x) \
+    ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+
 /* an 8MB window */
 #define WINDOW (8 * 1024 * 1024)
 
@@ -128,148 +131,224 @@ static void swapwindow(int fd, size_t idx, size_t window) {
     }
 }
 
-/* fully generalized tee */
-static ssize_t ctee(int in, int out, int file) {
-    bool ok = false;
+/* multiplex an input pipe to a bunch of output pipes */
+static ssize_t muxpipe(int in, const int *out, size_t nout) {
+    ssize_t min = SSIZE_MAX;
+    size_t todo = nout;
 
-    int inpipe[2];
-    int outpipe[2];
-
-    /* create the kernel buffers and try to enlarge them to 1MB */
-    if (pipe(inpipe) < 0) {
-        perror("pipe()");
-        return -1;
-    }
-    pipesize(inpipe[1], 0x100000);
-
-    if (pipe(outpipe) < 0) {
-        perror("pipe()");
-        goto parterror;
-    }
-    pipesize(outpipe[1], 0x100000);
-
-    ssize_t written = 0;
-    size_t wfilled = 0;
-    size_t windowidx = 0;
-    bool outisfile = S_ISREG(mode(out));
-    while (1) {
-        /* copy the input to the kernel buffer, passing SIZE_MAX or even
-         * SSIZE_MAX doesn't (always) work. The call returns "Invalid
-         * argument" */
-        ssize_t rcvd = splice(in, NULL, inpipe[1], NULL, (size_t) INT_MAX,
-                SPLICE_F_MORE | SPLICE_F_MOVE);
-        if (rcvd == -1) {
-            perror("input splice()");
-            goto error;
+    while (todo) {
+        ssize_t teed = tee(in, out[0], (size_t) INT_MAX, SPLICE_F_NONBLOCK);
+        if (teed == 0) {
+            return 0;
         }
 
-        if (rcvd == 0) {
-            /* reached the end of the input file */
-            break;
-        }
-
-        TRACE("recvd %zd bytes\n", rcvd);
-
-        /* "copy" to temporary buffer */
-        ssize_t teed = tee(inpipe[0], outpipe[1], (size_t) rcvd, SPLICE_F_NONBLOCK);
         if (teed == -1) {
-            /* TODO:  this is definitely wrong in this case */
             if (errno == EAGAIN) {
                 usleep(1000);
                 continue;
             }
             perror("tee()");
-            goto error;
+            return -1;
         }
 
+        if (teed < min) {
+            min = teed;
+        }
+
+        --todo;
+    }
+
+    return (min == SSIZE_MAX) ? 0 : min;
+}
+
+/* drain fds to fds with splice */
+static ssize_t drain(const int *in, const int *out, size_t nfds, size_t len) {
+    for (size_t i = 0; i < nfds; ++i) {
+        if (spliceall(in[i], out[i], len) == -1) {
+            return -1;
+        }
+    }
+
+    return len;
+}
+
+typedef union {
+    struct { int out, in; } fd;
+    int o[2];
+} pipe_t;
+
+static pipe_t xpipe() {
+    pipe_t p;
+    if (pipe(p.o) < 0) {
+        perror("pipe()");
+
+        memset(&p, 0x0, sizeof(p));
+        return p;
+    }
+
+    pipesize(p.fd.out, 0x100000);
+    return p;
+}
+
+/**
+ * the tee to rule all tees
+ *
+ *        ,-> outp2 (output to pipes)
+ * tee()  |-> outp1
+ *        |-> p2w | p2r -> out3 (output to file, through a pipe)
+ *        |-> p1w | p1r -> out2
+ * p --------------------> out1 (output to one file can be done directly)
+ *        splice()
+ */
+static ssize_t utee(int in, int *out, size_t nout) {
+    bool ok = false;
+
+    int origin = 0;
+    int originpipe[2];
+
+    bool copyin = !S_ISFIFO(mode(in));
+    if (copyin) {
+        TRACE("input is not a pipe, using an intermediate\n");
+        /* we have to create an intermediate pipe to act as the origin */
+        if (pipe(originpipe) < 0) {
+            perror("pipe()");
+            return -1;
+        }
+
+        origin = originpipe[0];
+    }
+    else {
+        TRACE("tee'ing directly from the input pipe\n");
+        /* if the input is already a pipe, we can directly use it as the
+         * origin pipe */
+        origin = in;
+    }
+    pipesize(origin, 0x100000);
+
+    /* possibly slightly overallocate, doesn't matter a lot */
+    int *teeto = malloc((nout + 1) * sizeof(int));
+    int *splicefrom = malloc((nout + 1) * sizeof(int));
+    int *spliceto = malloc((nout + 1) * sizeof(int));
+
+    size_t ntee = 0;
+    size_t nsplice = 0;
+
+    /* first, fill up the final output array (spliceto) */
+    for (size_t i = 0; i < nout; ++i) {
+        /* anything that's not a pipe, goes in the splice output array */
+        if (!S_ISFIFO(mode(out[i]))) {
+            spliceto[nsplice++] = out[i];
+        }
+    }
+
+    /* we always splice directly from the origin */
+    splicefrom[0] = origin;
+
+    /* add as much intermediate pipes as necessary to be able to feed the
+     * files in the spliceto array (files can't be teed to, so we need to
+     * tee to an intermediate pipe and then splice from it to a file). This
+     * loop starts at idx 1 because we already added the origin. */
+    for (size_t i = 1; i < nsplice; ++i) {
+        pipe_t p = xpipe();
+        if (p.fd.in == 0) goto error;
+        teeto[ntee++] = p.fd.in;
+        splicefrom[i] = p.fd.out;
+    }
+
+    /* loop again over the output fds, but this time only look for pipes,
+     * these pipes are output pipes themselves, they won't be spliced into
+     * another fd */
+    for (size_t i = 0; i < nout; ++i) {
+        if (S_ISFIFO(mode(out[i]))) {
+            teeto[ntee++] = out[i];
+            pipesize(out[i], 0x100000);
+        }
+    }
+
+    ssize_t written = 0;
+    size_t wfilled = 0;
+    size_t widx = 0;
+
+    /* start shuttling data */
+    while (1) {
+        /* if the input wasn't a pipe, we have to splice its data into the
+         * pipe we created */
+        if (copyin) {
+            ssize_t rcvd = splice(in, NULL, originpipe[1], NULL, (size_t) INT_MAX,
+                    SPLICE_F_MORE | SPLICE_F_MOVE);
+            if (rcvd == -1) {
+                perror("input splice()");
+                goto error;
+            }
+            if (rcvd == 0) {
+                break; /* we're done */
+            }
+            TRACE("push -> %zd bytes\n", rcvd);
+        }
+
+        ssize_t teed = muxpipe(origin, teeto, ntee);
+        if (teed == -1) {
+            goto error;
+        }
         if (teed == 0) {
-            /* we're done! */
-            break;
+            break; /* we're done */
         }
+        TRACE("mux 1 -> %zu, %zd bytes\n", ntee, teed);
 
-        TRACE("teed %zd bytes\n", teed);
-
-        /* stream len bytes to `out` and `file` */
-        if (!spliceall(outpipe[0], file, teed)) {
-            perror("file splice()");
+        ssize_t drained = drain(splicefrom, spliceto, nsplice, (size_t) teed);
+        if (drained == -1) {
             goto error;
         }
+        TRACE("drain %zu -> %zu, %zd bytes\n", nsplice, nsplice, drained);
 
-        if (!spliceall(inpipe[0], out, teed)) {
-            perror("out splice()");
-            goto error;
-        }
-
-        /* don't thrash the page cache, we won't be reading the file anyway,
-         * we don't call it on every iteration (save CPU) quite
-         * CPU-intensive to call; wait until a window has filled up */
+        /* do our best to not thrash the page cache, we won't be reading the
+         * file anyway, we don't call it on every iteration (save CPU), just
+         * when a window has filled up */
         if (wfilled >= WINDOW) {
-            swapwindow(file, windowidx, WINDOW);
+            swapwindow(spliceto[0], widx, WINDOW);
 
-            /* technically, the out fd could also be a file (example: `utee
-             * file1 > file2`), in that case also clear the page cache for
-             * the out fd */
-            if (outisfile && g_force_no_thrash) {
-                swapwindow(out, windowidx, WINDOW);
+            if (g_force_no_thrash) {
+                for (size_t i = 1; i < nsplice; ++i) {
+                    swapwindow(spliceto[i], widx, WINDOW);
+                }
             }
 
             wfilled = 0;
-            windowidx++;
+            widx++;
         }
 
-        written += rcvd;
-        wfilled += rcvd;
+        written += teed;
+        wfilled += teed;
     }
 
     /* discard the last slice of data */
-    if (windowidx) {
-        discard(file, WINDOW * (windowidx - 1), WINDOW + wfilled);
-        if (outisfile && g_force_no_thrash) {
-            discard(out, WINDOW * (windowidx - 1), WINDOW + wfilled);
+    if (widx) {
+        discard(spliceto[0], WINDOW * (widx - 1), WINDOW + wfilled);
+        if (g_force_no_thrash) {
+            for (size_t i = 1; i < nsplice; ++i) {
+                discard(spliceto[i], WINDOW * (widx - 1), WINDOW + wfilled);
+            }
         }
     }
 
     ok = true;
 
 error:
-    close(outpipe[0]);
-    close(outpipe[1]);
-parterror:
-    close(inpipe[0]);
-    close(inpipe[1]);
+    /* close all pipes that we created ourselves */
+    if (copyin) {
+        close(originpipe[0]);
+        close(originpipe[1]);
+    }
+    for (size_t i = 1; i < nsplice; ++i) {
+        close(teeto[i - 1]);
+        close(splicefrom[i]);
+    }
+
+    free(splicefrom);
+    free(spliceto);
+    free(teeto);
 
     return ok ? written : -1;
-}
-
-static ssize_t ttee(int pin, int pout, int file) {
-    ssize_t written = 0;
-    do {
-        /* this will work if both stdin and stdout are pipes */
-        ssize_t len = tee(pin, pout, SSIZE_MAX, SPLICE_F_NONBLOCK);
-
-        if (len == -1) {
-            if (errno == EAGAIN) {
-                usleep(1000);
-                continue;
-            }
-            perror("tee()");
-            return -1;
-        }
-        else if (len == 0) {
-            /* we're done! */
-            break;
-        }
-
-        /* send the output to a file (consumes it) */
-        if (!spliceall(pin, file, len)) {
-            perror("splice():");
-            return -1;
-        }
-
-        written += len;
-    } while(1);
-
-    return written;
 }
 
 static const char *parseopts(int argc, char *argv[]) {
@@ -298,6 +377,11 @@ int main(int argc, char *argv[]) {
 
     TRACE("Welcome to utee version " VERSION "\n");
 
+    if (fcntl(STDOUT_FILENO, F_GETFL) & O_APPEND) {
+        fputs("can't output to an append-mode file, use regular tee\n", stderr);
+        exit(EXIT_FAILURE);
+    }
+
     int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         perror("couldn't create file");
@@ -305,10 +389,9 @@ int main(int argc, char *argv[]) {
     }
 
     mode_t inmode = mode(STDIN_FILENO);
-    mode_t outmode = mode(STDOUT_FILENO);
 
     TRACE("STDIN is a %s!\n", typestr(inmode));
-    TRACE("STDOUT is a %s!\n", typestr(outmode));
+    TRACE("STDOUT is a %s!\n", typestr(mode(STDOUT_FILENO)));
 
     if (S_ISREG(inmode)) {
         /* technically it would be best to supply POSIX_FADV_NOREUSE, but
@@ -317,44 +400,18 @@ int main(int argc, char *argv[]) {
         fadvise(STDIN_FILENO, POSIX_FADV_SEQUENTIAL);
     }
 
-    int status = EXIT_SUCCESS;
-    ssize_t written = -1;
-    /* detect which kind of file descript stdin and stdout are, some
-     * possibilities are: pipe, file, tty, ... */
-    if (S_ISFIFO(inmode) && S_ISFIFO(outmode)) {
-        /* both stdin and stdout are pipes (this happens in a shell when
-         * doing for example "... | utee | ..."), which means we don't have
-         * to create intermediate pipes */
-        TRACE("input and output are pipes, taking a shortcut\n");
-        written = ttee(STDIN_FILENO, STDOUT_FILENO, fd);
-    }
-    else {
-        if (fcntl(STDOUT_FILENO, F_GETFL) & O_APPEND) {
-            fputs("can't output to an append-mode file, use regular tee\n", stderr);
-            status = EXIT_FAILURE;
-            goto end;
-        }
+    int out[] = {STDOUT_FILENO, fd};
+    ssize_t written = utee(STDIN_FILENO, out, NELEM(out));
 
-        /* either stdin or stdout is not a pipe, so we use intermediate
-         * pipes to be able to use tee()/splice(), thus avoiding user-space
-         * buffers */
-        TRACE("input or output is not a pipe, creating intermediary pipes\n");
-        written = ctee(STDIN_FILENO, STDOUT_FILENO, fd);
+    if (written != -1) {
+        TRACE("wrote %zd bytes\n", written);
     }
 
-    if (written == -1) {
-        status = EXIT_FAILURE;
-        goto end;
-    }
-
-    TRACE("wrote %zd bytes\n", written);
-
-end:
     if (S_ISREG(inmode)) {
         /* restore the advice for the infd */
         fadvise(STDIN_FILENO, POSIX_FADV_NORMAL);
     }
 
     close(fd);
-    exit(status);
+    exit(written == -1 ? EXIT_FAILURE : EXIT_SUCCESS);
 }
