@@ -38,6 +38,22 @@ static bool g_force_no_thrash = false;
         if (g_verbose > 0) fprintf(stderr, __VA_ARGS__); \
     } while (0)
 
+#define CHECK_POSIX_RTRN(expr, val) \
+    do { \
+        if ((expr) == -1) { \
+            perror(#expr); \
+            return (val); \
+        } \
+    } while (0)
+
+#define CHECK_POSIX_GOTO(expr, label) \
+    do { \
+        if ((expr) == -1) { \
+            perror(#expr); \
+            goto label; \
+        } \
+    } while (0)
+
 /* perror() but with a self-supplied errno */
 static void perrorv(const char *msg, int err) {
     /* we don't multithread, so strerror() should be fine */
@@ -52,18 +68,18 @@ static void fadvise(int fd, unsigned int advice) {
     }
 }
 
-static bool spliceall(int infd, int outfd, size_t len) {
+static ssize_t spliceall(int infd, int outfd, size_t len) {
     while (len) {
-        ssize_t written = splice(infd, NULL, outfd, NULL, (size_t) len,
+        ssize_t written = splice(infd, NULL, outfd, NULL, len,
                 SPLICE_F_MORE | SPLICE_F_MOVE);
         if (written <= 0) {
-            return false;
+            return -1;
         }
 
         len -= written;
     }
 
-    return true;
+    return 0;
 }
 
 NORETURN static void usage() {
@@ -125,19 +141,11 @@ static void swapwindow(int fd, size_t idx, size_t window) {
 
 /* fully generalized tee */
 static ssize_t ctee(int in, int out, int file) {
-    int inpipe[2];
-    int outpipe[2];
+    int inpipe[2], outpipe[2];
 
     /* create the kernel buffers */
-    if (pipe(inpipe) < 0) {
-        perror("pipe()");
-        return -1;
-    }
-
-    if (pipe(outpipe) < 0) {
-        perror("pipe()");
-        goto parterror;
-    }
+    CHECK_POSIX_RTRN(pipe(inpipe), -1);
+    CHECK_POSIX_GOTO(pipe(outpipe), parterror);
 
     ssize_t written = 0;
     size_t wfilled = 0;
@@ -147,12 +155,9 @@ static ssize_t ctee(int in, int out, int file) {
         /* copy the input to the kernel buffer, passing SIZE_MAX or even
          * SSIZE_MAX doesn't (always) work. The call returns "Invalid
          * argument" */
-        ssize_t rcvd = splice(in, NULL, inpipe[1], NULL, (size_t) INT_MAX,
-                SPLICE_F_MORE | SPLICE_F_MOVE);
-        if (rcvd == -1) {
-            perror("input splice()");
-            goto error;
-        }
+        ssize_t rcvd;
+        CHECK_POSIX_GOTO(rcvd = splice(in, NULL, inpipe[1], NULL, (size_t) INT_MAX,
+                SPLICE_F_MORE | SPLICE_F_MOVE), error);
 
         if (rcvd == 0) {
             /* reached the end of the input file */
@@ -181,15 +186,8 @@ static ssize_t ctee(int in, int out, int file) {
         TRACE("teed %zd bytes\n", teed);
 
         /* stream len bytes to `out` and `file` */
-        if (!spliceall(outpipe[0], file, teed)) {
-            perror("file splice()");
-            goto error;
-        }
-
-        if (!spliceall(inpipe[0], out, teed)) {
-            perror("out splice()");
-            goto error;
-        }
+        CHECK_POSIX_GOTO(spliceall(outpipe[0], file, teed), error);
+        CHECK_POSIX_GOTO(spliceall(inpipe[0], out, teed), error);
 
         /* don't thrash the page cache, we won't be reading the file anyway,
          * we don't call it on every iteration (save CPU) quite
@@ -252,10 +250,7 @@ static ssize_t ttee(int pin, int pout, int file) {
         }
 
         /* send the output to a file (consumes it) */
-        if (!spliceall(pin, file, len)) {
-            perror("splice():");
-            return -1;
-        }
+        CHECK_POSIX_RTRN(spliceall(pin, file, len), -1);
 
         written += len;
     } while(1);
