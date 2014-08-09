@@ -12,7 +12,6 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/sendfile.h>
 
 #ifndef VERSION
 #define VERSION "unknown"
