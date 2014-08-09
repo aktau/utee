@@ -124,6 +124,8 @@ static void swapwindow(int fd, size_t idx, size_t window) {
 
 /* fully generalized tee */
 static ssize_t ctee(int in, int out, int file) {
+    bool ok = false;
+
     int inpipe[2];
     int outpipe[2];
 
@@ -219,7 +221,7 @@ static ssize_t ctee(int in, int out, int file) {
         }
     }
 
-    return written;
+    ok = true;
 
 error:
     close(outpipe[0]);
@@ -228,7 +230,7 @@ parterror:
     close(inpipe[0]);
     close(inpipe[1]);
 
-    return -1;
+    return ok ? written : -1;
 }
 
 static ssize_t ttee(int pin, int pout, int file) {
