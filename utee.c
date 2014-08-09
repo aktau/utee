@@ -241,6 +241,16 @@ static ssize_t utee(int in, int *out, size_t nout) {
         }
     }
 
+    if (nsplice == 0) {
+        /* It seems everything was a pipe, this is possible if a FIFO is
+         * passed on the commandline, e.g.: ls -l | utee myfifo | sort -k5n.
+         * Yet we need _something_ to drain the origin, so we force the
+         * last pipe to be spliced to. */
+        spliceto[nsplice++] = out[nout - 1];
+        pipesize(out[nout - 1], 0x100000);
+        --nout;
+    }
+
     /* we always splice directly from the origin */
     splicefrom[0] = origin;
 
