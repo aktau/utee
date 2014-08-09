@@ -100,6 +100,12 @@ static void writeout(int fd, size_t offset, size_t len) {
     sync_file_range(fd, offset, len, SYNC_FILE_RANGE_WRITE);
 }
 
+static void pipesize(int fd, int size) {
+    if (fcntl(fd, F_SETPIPE_SZ, size) == -1) {
+        perror("fcntl(F_SETPIPE_SZ)");
+    }
+}
+
 /* write the range and force it out of the page cache */
 static void discard(int fd, size_t offset, size_t len) {
     /* contrary to the former call this will block, force write
@@ -129,16 +135,18 @@ static ssize_t ctee(int in, int out, int file) {
     int inpipe[2];
     int outpipe[2];
 
-    /* create the kernel buffers */
+    /* create the kernel buffers and try to enlarge them to 1MB */
     if (pipe(inpipe) < 0) {
         perror("pipe()");
         return -1;
     }
+    pipesize(inpipe[1], 0x100000);
 
     if (pipe(outpipe) < 0) {
         perror("pipe()");
         goto parterror;
     }
+    pipesize(outpipe[1], 0x100000);
 
     ssize_t written = 0;
     size_t wfilled = 0;

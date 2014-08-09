@@ -212,9 +212,8 @@ as the initial implementations had bugs:
 TODO
 ====
 
-- Try `fcntl(fd, F_SETPIPE_SZ, ...)` and see if it can do something for
-  utee
-- Append to files
+- Append to files (can't properly be done with splice(), it seems, at
+  least not in a race-free way)
 
 Resources
 =========
