@@ -39,7 +39,7 @@ WARN := -Wall -Wextra -pedantic \
 	-Wstrict-aliasing=2 -Wstrict-overflow=5 \
 	-Wdisabled-optimization -Wshadow -Wmissing-braces
 PROT := -D_FORTIFY_SOURCE=2 -fstack-protector
-VERSION := 1.2.0
+VERSION := 1.2.1
 CFLAGS ?= $(STD) $(WARN) $(PROT) -DVERSION=\"$(VERSION)\"
 
 # the default target is release
