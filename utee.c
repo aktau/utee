@@ -134,10 +134,10 @@ static void swapwindow(int fd, size_t idx, size_t window) {
 /* multiplex an input pipe to a bunch of output pipes */
 static ssize_t muxpipe(int in, const int *out, size_t nout) {
     ssize_t min = SSIZE_MAX;
-    size_t todo = nout;
 
-    while (todo) {
-        ssize_t teed = tee(in, out[0], (size_t) INT_MAX, SPLICE_F_NONBLOCK);
+    size_t i = 0;
+    while (i < nout) {
+        ssize_t teed = tee(in, out[i], (size_t) INT_MAX, SPLICE_F_NONBLOCK);
         if (teed == 0) {
             return 0;
         }
@@ -155,7 +155,7 @@ static ssize_t muxpipe(int in, const int *out, size_t nout) {
             min = teed;
         }
 
-        --todo;
+        ++i;
     }
 
     return (min == SSIZE_MAX) ? 0 : min;
@@ -351,41 +351,48 @@ error:
     return ok ? written : -1;
 }
 
-static const char *parseopts(int argc, char *argv[]) {
+static int parseopts(int argc, char *argv[]) {
     int option = 0;
 
     while ((option = getopt(argc, argv, "vc")) != -1) {
         switch (option) {
             case 'v': g_verbose = 1; break;
             case 'c': g_force_no_thrash = true; break;
-            default: return NULL;
+            default: return -1;
         }
     }
 
     if (argc <= optind) {
-        return NULL;
+        return -1;
     }
 
-    return argv[optind];
+    return optind;
 }
 
 int main(int argc, char *argv[]) {
-    const char *file = parseopts(argc, argv);
-    if (!file) {
+    int idx = parseopts(argc, argv);
+    if (idx == -1) {
         usage();
     }
 
     TRACE("Welcome to utee version " VERSION "\n");
-
     if (fcntl(STDOUT_FILENO, F_GETFL) & O_APPEND) {
         fputs("can't output to an append-mode file, use regular tee\n", stderr);
         exit(EXIT_FAILURE);
     }
 
-    int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        perror("couldn't create file");
-        exit(EXIT_FAILURE);
+    int nfiles = argc - idx;
+    int *out = calloc(nfiles + 1, sizeof(int));
+
+    /* the first one is standard output */
+    out[0] = STDOUT_FILENO;
+    for (int i = 1; i < nfiles + 1; ++i) {
+        int fd = open(argv[idx + i - 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            perror("couldn't create file");
+            exit(EXIT_FAILURE);
+        }
+        out[i] = fd;
     }
 
     mode_t inmode = mode(STDIN_FILENO);
@@ -400,8 +407,7 @@ int main(int argc, char *argv[]) {
         fadvise(STDIN_FILENO, POSIX_FADV_SEQUENTIAL);
     }
 
-    int out[] = {STDOUT_FILENO, fd};
-    ssize_t written = utee(STDIN_FILENO, out, NELEM(out));
+    ssize_t written = utee(STDIN_FILENO, out, nfiles + 1);
 
     if (written != -1) {
         TRACE("wrote %zd bytes\n", written);
@@ -412,6 +418,13 @@ int main(int argc, char *argv[]) {
         fadvise(STDIN_FILENO, POSIX_FADV_NORMAL);
     }
 
-    close(fd);
+    for (int i = 1; i < nfiles + 1; ++i) {
+        if (close(out[i]) == -1) {
+            perror("close()");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    free(out);
     exit(written == -1 ? EXIT_FAILURE : EXIT_SUCCESS);
 }
